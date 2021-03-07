@@ -1,0 +1,60 @@
+﻿using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using SharpCR.Registry;
+using Xunit;
+
+namespace SharpCR.Features.Tests.CloudStorage
+{
+    public class BlobStorageFacts
+    {
+        [Fact]
+        public async Task ShouldSaveBlob()
+        {
+            var storage = CreateBlobStorage(out var blobsPath);
+
+            var bytes = Encoding.Default.GetBytes(Guid.NewGuid().ToString("N"));
+            await using var ms = new MemoryStream(bytes);
+            var location = await storage.SaveAsync("abc/foo", "sha256@ab123de", ms);
+
+            var actualPath = Path.Combine(blobsPath, location);
+            Assert.True(File.Exists(actualPath));
+            Assert.True((await File.ReadAllBytesAsync(actualPath)).SequenceEqual(bytes));
+        }
+        
+        [Fact]
+        public async Task ShouldReadByLocation()
+        {
+            var storage = CreateBlobStorage(out _);
+
+            var bytes = Encoding.Default.GetBytes(Guid.NewGuid().ToString("N"));
+            await using var ms = new MemoryStream(bytes);
+            var location = await storage.SaveAsync("abc/foo", "sha256@ab123de", ms);
+
+            await using var readResult = await storage.ReadAsync(location);
+            await using var readMs = new MemoryStream();
+            await readResult.CopyToAsync(readMs);
+            var readBytes = readMs.ToArray();
+            
+            Assert.True(readBytes.SequenceEqual(bytes));
+        }
+
+
+        [Fact]
+        public void ShouldNotSupportDownloads()
+        {
+            var storage = CreateBlobStorage(out _);
+            
+            Assert.False(storage.SupportsDownloading);
+            Assert.Throws<NotImplementedException>(() => { storage.GenerateDownloadUrlAsync("some-location");});
+        }
+        
+        
+        private static IBlobStorage CreateBlobStorage(out string blobsPath)
+        {
+            throw new NotImplementedException();
+        }
+    }
+}

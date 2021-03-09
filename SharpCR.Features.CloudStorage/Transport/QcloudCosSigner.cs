@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -9,50 +10,45 @@ using System.Web;
 
 namespace SharpCR.Features.CloudStorage.Transport
 {
-    public class Requester
+    public class QcloudCosSigner
     {
-        
-
-
         /// <summary>
         /// Get signed request according to doc at
         /// https://cloud.tencent.com/document/product/436/7778
         /// </summary>
         /// <returns></returns>
-        public static string GenerateSignature(string secretId, string secretKey, HttpMethod httpMethod, Uri requestUri,
-            HttpRequestHeaders requestHeaders,
-            HttpContentHeaders contentHeaders)
+        public static string GenerateSignature(HttpRequestMessage requestMessage, string secretId, string secretKey, bool noHeaders)
         {
-            // var keyStart = timestamp(TimeSpan.Zero);
-            // var keyEnd = timestamp(TimeSpan.FromMinutes(60));
-            // var keyTime = $"{keyStart};{keyEnd}";
-            var keyTime = $"1557989151;1557996351";
+            var keyStart = timestamp(TimeSpan.Zero);
+            var keyEnd = timestamp(TimeSpan.FromMinutes(30));
+            var keyTime = $"{keyStart};{keyEnd}";
+
+            requestMessage.Headers.Host = requestMessage.RequestUri.Host;
+            requestMessage.Headers.Date = DateTimeOffset.UtcNow;
 
             var signKey = hmacSHA1(secretKey, keyTime);
-
-            var (httpParameters, urlParamList) = URLParameters(requestUri);
-
-
-            var (httpHeaders, headerList) = HttpHeaders(requestHeaders, contentHeaders);
-
+            var (httpParameters, urlParamList) = URLParameters(requestMessage.RequestUri);
+            var (httpHeaders, headerList) = HttpHeaders(noHeaders ? null : requestMessage.Headers, requestMessage.Content?.Headers);
 
             var httpString = string.Join("\n",  new[]
             {
-                httpMethod.ToString().ToLower(),
-                requestUri.AbsolutePath,
+                requestMessage.Method.ToString().ToLower(),
+                requestMessage.RequestUri.AbsolutePath,
                 httpParameters,
-                httpHeaders
+                httpHeaders,
+                string.Empty
             });
             var sha1HttpString = SHA1(httpString);
 
             var stringToSign = string.Join("\n", new[]
             {
+                "sha1",
                 keyTime,
-                sha1HttpString
+                sha1HttpString,
+                string.Empty
             });
 
             var signature = hmacSHA1( signKey, stringToSign);
-
             var result = string.Join("&", new[]
             {
                 "q-sign-algorithm=sha1",
@@ -64,15 +60,15 @@ namespace SharpCR.Features.CloudStorage.Transport
                 $"q-signature={signature}"
             });
             return result;
-
         }
 
-        public static (string httpHeaders, string headerList) HttpHeaders(HttpHeaders requestHeaders, HttpHeaders contentHeaders)
+        private static (string httpHeaders, string headerList) HttpHeaders(HttpHeaders requestHeaders, HttpHeaders contentHeaders)
         {
-            var requestHeaderVals = requestHeaders
-                .Select(h => Tuple.Create(h.Key, h.Value));
-            var contentHeaderVals = contentHeaders
-                .Select(h => Tuple.Create(h.Key, h.Value));
+            var emptyHeaders = (Enumerable.Empty<Tuple<string, IEnumerable<string>>>());
+            var requestHeaderVals = requestHeaders?
+                .Select(h => Tuple.Create(h.Key, h.Value)) ?? emptyHeaders;
+            var contentHeaderVals = contentHeaders?
+                .Select(h => Tuple.Create(h.Key, h.Value))  ?? emptyHeaders ;
             
             var headerParameters = requestHeaderVals.Concat(contentHeaderVals)
                 .OrderBy(h => h.Item1)
@@ -85,7 +81,7 @@ namespace SharpCR.Features.CloudStorage.Transport
             return (httpHeaders, headerList);
         }
 
-        public static (string httpParameters, string urlParamList) URLParameters(Uri requestUri)
+        private  static (string httpParameters, string urlParamList) URLParameters(Uri requestUri)
         {
             var queryStringMap = HttpUtility.ParseQueryString(requestUri.Query); // queryString should all be UrlEncoded
             var urlParameters = queryStringMap.AllKeys
@@ -100,19 +96,19 @@ namespace SharpCR.Features.CloudStorage.Transport
         }
 
 
-        public static long timestamp(TimeSpan offset)
+        private  static long timestamp(TimeSpan offset)
         {
             return DateTimeOffset.UtcNow.Add(offset).ToUnixTimeSeconds();
         }
 
             
-        public static string SHA1(string str)
+        private  static string SHA1(string str)
         {
             using var sha1 = System.Security.Cryptography.SHA1.Create();
             return sha1.ComputeHash(Encoding.UTF8.GetBytes(str)).Aggregate("", (s, e) => s + $"{e:x2}", s => s );
         }
 
-        public static string hmacSHA1(string key, string str)
+        private  static string hmacSHA1(string key, string str)
         {
             var keyBytes = Encoding.UTF8.GetBytes(key);
             using var hmacsha1 = new HMACSHA1(keyBytes);
@@ -122,51 +118,15 @@ namespace SharpCR.Features.CloudStorage.Transport
 
         private static string UrlEncode(string raw)
         {
-            var specialChars = new[]
-            {
-                ' ',
-                '!',
-                '"',
-                '#',
-                '$',
-                '%',
-                '&',
-                '\'',
-                '(',
-                ')',
-                '*',
-                '+',
-                ',',
-                '/',
-                ':',
-                ';',
-                '<',
-                '=',
-                '>',
-                '?',
-                '@',
-                '[',
-                '\\',
-                ']',
-                '^',
-                '`',
-                '{',
-                '|',
-                '}'
-            };
+            var specialChars = new[] { '!', '(', ')', '*' };
 
-            var list = specialChars.Where(c =>
-            {
-                var str = new string(new[] {c});
-                return HttpUtility.UrlEncode(str).Equals(str);
-            }).ToList();
-
-            var encoded = HttpUtility.UrlEncode(raw);
-            list.ForEach(c =>
+            var encoded = WebUtility.UrlEncode(raw).Replace("+", "%20");
+            foreach (var c in specialChars)
             {
                 var integer = (int)c;
-                encoded = encoded.Replace(new string(new []{c}), $"%{integer:x2}");
-            });
+                encoded = encoded.Replace(new string(new[] {c}), $"%{integer:X2}");
+            }
+
             return encoded;
         }
     }

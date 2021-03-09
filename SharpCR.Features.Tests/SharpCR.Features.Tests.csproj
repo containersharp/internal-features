@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\sharpcr\SharpCR.Registry\SharpCR.Registry.csproj" />
+    <ProjectReference Include="..\SharpCR.Features.CloudStorage\SharpCR.Features.CloudStorage.csproj" />
   </ItemGroup>
 
 </Project>

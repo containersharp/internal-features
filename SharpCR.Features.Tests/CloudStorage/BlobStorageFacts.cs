@@ -14,10 +14,7 @@ namespace SharpCR.Features.Tests.CloudStorage
 
         public BlobStorageFacts()
         {
-            _config = new CloudStorageConfiguration
-            {
-               
-            };
+
         }
         
         [Fact]
@@ -60,7 +57,7 @@ namespace SharpCR.Features.Tests.CloudStorage
         public async Task ShouldGenearateDownloadsURL()
         {
             var storage = new CloudBlobStorage(Options.Create(_config));
-            var location = "abc/foo/sha256/b5b2b2c507a0944348e0303114d8d93aaaa081732b86451d9bce1f432a537bc7";
+            var location = "abc/foo/sha256/2c4cd5fce8d443c5a58e7f2505198f35";
             var downloableURL = await storage.GenerateDownloadUrlAsync(location);
             
             Assert.NotNull(downloableURL);

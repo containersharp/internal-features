@@ -10,7 +10,7 @@ using System.Web;
 
 namespace SharpCR.Features.CloudStorage.Transport
 {
-    public class QcloudCosSigner
+    public static class QcloudCosSigner
     {
         /// <summary>
         /// Get signed request according to doc at
@@ -19,8 +19,8 @@ namespace SharpCR.Features.CloudStorage.Transport
         /// <returns></returns>
         public static string GenerateSignature(HttpRequestMessage requestMessage, string secretId, string secretKey, bool noHeaders)
         {
-            var keyStart = timestamp(TimeSpan.Zero);
-            var keyEnd = timestamp(TimeSpan.FromMinutes(30));
+            var keyStart = Timestamp(TimeSpan.Zero);
+            var keyEnd = Timestamp(TimeSpan.FromMinutes(30));
             var keyTime = $"{keyStart};{keyEnd}";
 
             requestMessage.Headers.Host = requestMessage.RequestUri.Host;
@@ -62,6 +62,11 @@ namespace SharpCR.Features.CloudStorage.Transport
             return result;
         }
 
+        public static long Timestamp(TimeSpan offset)
+        {
+            return DateTimeOffset.UtcNow.Add(offset).ToUnixTimeSeconds();
+        }
+
         private static (string httpHeaders, string headerList) HttpHeaders(HttpHeaders requestHeaders, HttpHeaders contentHeaders)
         {
             var emptyHeaders = (Enumerable.Empty<Tuple<string, IEnumerable<string>>>());
@@ -96,16 +101,11 @@ namespace SharpCR.Features.CloudStorage.Transport
         }
 
 
-        private  static long timestamp(TimeSpan offset)
-        {
-            return DateTimeOffset.UtcNow.Add(offset).ToUnixTimeSeconds();
-        }
 
-            
         private  static string SHA1(string str)
         {
             using var sha1 = System.Security.Cryptography.SHA1.Create();
-            return sha1.ComputeHash(Encoding.UTF8.GetBytes(str)).Aggregate("", (s, e) => s + $"{e:x2}", s => s );
+            return sha1.ComputeHash(Encoding.UTF8.GetBytes(str)).ToHexString();
         }
 
         private  static string hmacSHA1(string key, string str)
@@ -113,7 +113,7 @@ namespace SharpCR.Features.CloudStorage.Transport
             var keyBytes = Encoding.UTF8.GetBytes(key);
             using var hmacsha1 = new HMACSHA1(keyBytes);
             hmacsha1.Key = keyBytes;
-            return hmacsha1.ComputeHash(Encoding.UTF8.GetBytes(str)).Aggregate("", (s, e) => s + $"{e:x2}", s => s );   
+            return hmacsha1.ComputeHash(Encoding.UTF8.GetBytes(str)).ToHexString();   
         }
 
         private static string UrlEncode(string raw)
@@ -128,6 +128,12 @@ namespace SharpCR.Features.CloudStorage.Transport
             }
 
             return encoded;
+        }
+
+
+        public static string ToHexString(this byte[] bytes)
+        {
+            return bytes.Aggregate("", (s, e) => s + $"{e:x2}", s => s);
         }
     }
 }

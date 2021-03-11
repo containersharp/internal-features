@@ -38,6 +38,11 @@ namespace SharpCR.Features.CloudStorage
             return await response.Content.ReadAsStreamAsync();
         }
 
+        public Task<bool> ExistAsync(string location)
+        {
+            throw new NotImplementedException();
+        }
+
         public Task DeleteAsync(string location)
         {
             throw new NotImplementedException();
@@ -45,7 +50,7 @@ namespace SharpCR.Features.CloudStorage
 
         public async Task<string> SaveAsync(string repoName, string digest, Stream stream)
         {
-            var objectKey =  Path.Combine(repoName, digest.Replace(':', '/'));
+            var objectKey =  digest.Replace(':', '/');
             var cosBaseUrl = _config.CosServiceBaseUrl;
             if (!string.IsNullOrEmpty(_config.AcceleratedUploadingBaseUrl))
             {
@@ -95,6 +100,12 @@ namespace SharpCR.Features.CloudStorage
             return $"{resourceUri}?{signature}";
         }
         
+        /// <summary>
+        /// 按照腾讯云的约定，生成带鉴权的 CDN 下载 URL
+        /// 文档位置：https://cloud.tencent.com/document/product/228/41622
+        /// </summary>
+        /// <param name="location"></param>
+        /// <returns></returns>
         string GenerateCdnDownloadUrl(string location)
         {
             var timestamp = QcloudCosSigner.Timestamp(TimeSpan.Zero);

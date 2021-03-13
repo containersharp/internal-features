@@ -2,9 +2,7 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Options;
-using SharpCR.Registry;
-using SharpCR.Registry.Records;
+using SharpCR.Features.Records;
 using Xunit;
 
 namespace SharpCR.Features.Tests.CloudStorage

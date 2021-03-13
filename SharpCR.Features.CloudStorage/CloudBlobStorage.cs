@@ -7,7 +7,6 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
 using SharpCR.Features.CloudStorage.Transport;
-using SharpCR.Registry;
 
 namespace SharpCR.Features.CloudStorage
 {

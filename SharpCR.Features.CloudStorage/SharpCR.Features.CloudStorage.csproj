@@ -13,8 +13,9 @@
 </PropertyGroup>
 
 <ItemGroup>
-  <PackageReference Include="SharpCR.Registry" Version="1.0.1" />
+  <PackageReference Include="SharpCR.Features" Version="1.0.1" />
 </ItemGroup>
+
 
 
 </Project>

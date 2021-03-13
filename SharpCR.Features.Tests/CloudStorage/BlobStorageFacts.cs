@@ -14,7 +14,7 @@ namespace SharpCR.Features.Tests.CloudStorage
 
         public BlobStorageFacts()
         {
-
+            // _config = {}
         }
         
         [Fact]
@@ -25,7 +25,7 @@ namespace SharpCR.Features.Tests.CloudStorage
             var guid = Guid.NewGuid().ToString("N");
             var bytes = Encoding.Default.GetBytes(guid);
             await using var ms = new MemoryStream(bytes);
-            var location = await storage.SaveAsync("abc/foo", $"sha256:{guid}", ms);
+            var location = await storage.SaveAsync($"sha256:{guid}", ms, "abc/foo");
 
             Assert.NotEmpty(location);
         }

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -31,6 +32,17 @@ namespace SharpCR.Features.CloudStorage
             _httpClient = new HttpClient();
         }
 
+        public async Task<string> TryLocateExistingAsync(string digest)
+        {
+            var (objectKey, uri) = GetCloudObjectKey(digest);
+            var request = new HttpRequestMessage(HttpMethod.Head, uri);
+            var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
+            request.Headers.TryAddWithoutValidation("Authorization", signature);
+            var response = await _httpClient.SendAsync(request);
+            
+            return response.StatusCode == HttpStatusCode.OK ? objectKey : null;
+        }
+
         public async Task<Stream> ReadAsync(string location)
         {
             var downloadableUrl = GenerateCosDownloadUrl(location);
@@ -38,25 +50,20 @@ namespace SharpCR.Features.CloudStorage
             return await response.Content.ReadAsStreamAsync();
         }
 
-        public Task<bool> ExistAsync(string location)
+        public async Task DeleteAsync(string location)
         {
-            throw new NotImplementedException();
+            var resourceUri = $"{_config.CosServiceBaseUrl}/{location}";
+            var request = new HttpRequestMessage(HttpMethod.Delete, resourceUri);
+            var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
+            request.Headers.TryAddWithoutValidation("Authorization", signature);
+            
+            var response = await _httpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
         }
 
-        public Task DeleteAsync(string location)
+        public async Task<string> SaveAsync(string digest, Stream stream, string repoName)
         {
-            throw new NotImplementedException();
-        }
-
-        public async Task<string> SaveAsync(string repoName, string digest, Stream stream)
-        {
-            var objectKey =  digest.Replace(':', '/');
-            var cosBaseUrl = _config.CosServiceBaseUrl;
-            if (!string.IsNullOrEmpty(_config.AcceleratedUploadingBaseUrl))
-            {
-                cosBaseUrl = _config.AcceleratedUploadingBaseUrl;
-            }
-            var uri = $"{cosBaseUrl}/{objectKey}";
+            var (objectKey, uri) = GetCloudObjectKey(digest);
             
             var md5Hash = MD5Hash(stream);
             stream.Seek(0, SeekOrigin.Begin);
@@ -74,11 +81,6 @@ namespace SharpCR.Features.CloudStorage
             return objectKey;
         }
 
-        private static byte[] MD5Hash(Stream stream)
-        {
-            using var md5 = System.Security.Cryptography.MD5.Create();
-            return md5.ComputeHash(stream);
-        }
 
         public bool SupportsDownloading { get; } = true;
         
@@ -117,6 +119,25 @@ namespace SharpCR.Features.CloudStorage
             
             var resourceUri = $"{_config.CdnConfig.BaseUrl}/{location}?sign={timestamp}-{randString}-0-{md5}";
             return resourceUri;
+        }
+        
+        private (string objectKey, string uri) GetCloudObjectKey(string digest)
+        {
+            var objectKey = digest.Replace(':', '/');
+            var cosBaseUrl = _config.CosServiceBaseUrl;
+            if (!string.IsNullOrEmpty(_config.AcceleratedUploadingBaseUrl))
+            {
+                cosBaseUrl = _config.AcceleratedUploadingBaseUrl;
+            }
+
+            var uri = $"{cosBaseUrl}/{objectKey}";
+            return (objectKey, uri);
+        }
+
+        private static byte[] MD5Hash(Stream stream)
+        {
+            using var md5 = System.Security.Cryptography.MD5.Create();
+            return md5.ComputeHash(stream);
         }
     }
 }

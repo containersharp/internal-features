@@ -6,4 +6,4 @@ cd SharpCR.Features.ImageSyncIntegration
 dotnet build -c Release -r linux-x64
 
 cd ..
-docker build -t "sharpcr-registry-internal:1.0.1" .
+docker build -t "sharpcr-registry-internal:1.0.2" .

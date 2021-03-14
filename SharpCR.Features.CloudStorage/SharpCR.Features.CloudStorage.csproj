@@ -8,10 +8,6 @@
   <OutputPath>..\..\sharpcr\SharpCR.Registry\bin\Debug\</OutputPath>
 </PropertyGroup>
 
-<PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
-  <OutputPath>..\..\sharpcr\SharpCR.Registry\bin\Release\</OutputPath>
-</PropertyGroup>
-
 <ItemGroup>
   <PackageReference Include="SharpCR.Features" Version="1.0.1" />
 </ItemGroup>

@@ -1,8 +1,6 @@
 ﻿using System;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 
 namespace SharpCR.Features.SyncIntegration
 {
@@ -10,6 +8,10 @@ namespace SharpCR.Features.SyncIntegration
     {
         public void ConfigureServices(IServiceCollection services, StartupContext context)
         {
+            services.AddControllers(options =>
+            {
+                options.Filters.Add(typeof(MirrorModeRepoNameFilter));
+            });
             services.AddScoped<ImagePullHookMiddleware>();
         }
 

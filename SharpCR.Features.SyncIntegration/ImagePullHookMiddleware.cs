@@ -18,13 +18,14 @@ namespace SharpCR.Features.SyncIntegration
     public class ImagePullHookMiddleware: IMiddleware
     {
         private readonly IRecordStore _recordStore;
+        private readonly IBlobStorage _blobStorage;
         private readonly SyncConfiguration _options;
 
         private static readonly Regex ManifestRegex = new Regex("^/v2/(?<repo>.+)/manifests/(?<ref>.+)$", 
             RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
         private static HttpClient _httpClient;
 
-        public ImagePullHookMiddleware(IOptions<SyncConfiguration> options, IRecordStore recordStore)
+        public ImagePullHookMiddleware(IOptions<SyncConfiguration> options, IRecordStore recordStore, IBlobStorage blobStorage)
         {
             _options = options.Value;
             if (_options.Dispatcher?.BaseUrl == null)
@@ -33,6 +34,7 @@ namespace SharpCR.Features.SyncIntegration
             }
             _options.Dispatcher.BaseUrl = _options.Dispatcher.BaseUrl.TrimEnd('/');
             _recordStore = recordStore;
+            _blobStorage = blobStorage;
         }
         
         
@@ -178,16 +180,16 @@ namespace SharpCR.Features.SyncIntegration
             var jobResponse = await _httpClient.SendAsync(jobScheduleRequest);
             jobResponse.EnsureSuccessStatusCode();
             
-            await SpinWaitForSync(imageRepository, missingItems.Select(i => i.Digest).ToArray());
+            await SpinWaitForSync(imageRepository, missingItems);
         }
 
 
-        private async Task SpinWaitForSync(string repoName, string[] digestList)
+        private async Task SpinWaitForSync(string repoName, List<Manifest> missingItems)
         {
             var maxWait = Task.Delay(TimeSpan.FromSeconds(_options.SyncTimeoutSeconds!.Value));
             while (!maxWait.IsCompleted)
             {
-                var syncCompleted = await CheckSyncCompleted(repoName, digestList);
+                var syncCompleted = await CheckSyncCompleted(repoName, missingItems);
                 if (syncCompleted)
                 {
                     return;
@@ -197,18 +199,64 @@ namespace SharpCR.Features.SyncIntegration
             // timeout
         }
 
-        private async Task<bool> CheckSyncCompleted(string repoName, string[] digestList)
+        private async Task<bool> CheckSyncCompleted(string repoName, List<Manifest> missingItems)
         {
-            foreach (var digest in digestList)
+            var createdManifests = new HashSet<string>();
+            foreach (var manifest in missingItems)
             {
-                var existingItem = await _recordStore.GetArtifactByDigestAsync(repoName, digest);
-                if (null == existingItem)
+                var blobDigestList = manifest.Layers.Select(layer => layer.Digest).ToArray();
+                var uploadedBlobs = await CheckBlobsAreUploaded(blobDigestList);
+                if (uploadedBlobs == null)
                 {
                     return false;
+                }
+
+                if (!createdManifests.Contains(manifest.Digest))
+                {
+                    var existingItem = await _recordStore.GetArtifactByDigestAsync(repoName, manifest.Digest);
+                    if (existingItem == null)
+                    {
+                        foreach (var layer in manifest.Layers)
+                        {
+                            await _recordStore.CreateBlobAsync(new BlobRecord
+                            {
+                                DigestString = layer.Digest,
+                                RepositoryName = repoName,
+                                MediaType = layer.MediaType,
+                                StorageLocation = uploadedBlobs[layer.Digest],
+                                ContentLength = layer.Size!.Value
+                            });
+                        }
+                        await _recordStore.CreateArtifactAsync(new ArtifactRecord
+                        {
+                            DigestString = manifest.Digest,
+                            ManifestBytes = manifest.RawJsonBytes,
+                            ManifestMediaType = manifest.MediaType,
+                            RepositoryName = repoName
+                        });
+                    }
+
+                    createdManifests.Add(manifest.Digest);
                 }
             }
 
             return true;
+        }
+        
+        private async Task<Dictionary<string, string>> CheckBlobsAreUploaded(string[] blobDigests)
+        {
+            var blobLocations = new Dictionary<string, string>();
+            foreach (var digest in blobDigests)
+            {
+                var blobLocation = await _blobStorage.TryLocateExistingAsync(digest);
+                if (null == blobLocation)
+                {
+                    return null;
+                }
+                blobLocations.Add(digest, blobLocation);
+            }
+
+            return blobLocations;
         }
 
         private (string, string) ParseRegistryAndRepoName(HttpRequest request, string repoNameInUrl)

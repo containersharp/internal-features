@@ -1,14 +1,17 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
 using SharpCR.Features.Records;
 using SharpCR.Manifests;
@@ -24,6 +27,7 @@ namespace SharpCR.Features.SyncIntegration
         private static readonly Regex ManifestRegex = new Regex("^/v2/(?<repo>.+)/manifests/(?<ref>.+)$", 
             RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
         private static HttpClient _httpClient;
+        private IManifestParser[] _manifestParsers;
 
         public ImagePullHookMiddleware(IOptions<SyncConfiguration> options, IRecordStore recordStore, IBlobStorage blobStorage)
         {
@@ -35,6 +39,14 @@ namespace SharpCR.Features.SyncIntegration
             _options.Dispatcher.BaseUrl = _options.Dispatcher.BaseUrl.TrimEnd('/');
             _recordStore = recordStore;
             _blobStorage = blobStorage;
+
+            var parserType = typeof (IManifestParser);
+            var listType = typeof(ManifestV2List);
+            _manifestParsers = parserType.Assembly.GetExportedTypes()
+                .Where(t => (t.IsPublic || t.IsNestedPublic) && t.IsClass && parserType.IsAssignableFrom(t))
+                .Where(t => t != listType)
+                .Select(x => Activator.CreateInstance(x) as IManifestParser)
+                .ToArray();
         }
         
         
@@ -87,6 +99,11 @@ namespace SharpCR.Features.SyncIntegration
             {
                 _httpClient = new HttpClient();
                 _httpClient.DefaultRequestHeaders.Accept.Add(MediaTypeWithQualityHeaderValue.Parse(jsonMediaType));
+                if (!string.IsNullOrEmpty(_options.Dispatcher.AuthorizationToken))
+                {
+                    _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Authorization",
+                        _options.Dispatcher.AuthorizationToken);
+                }
             }
 
             var imageRepository = $"{registry}/{repoName}";
@@ -111,8 +128,8 @@ namespace SharpCR.Features.SyncIntegration
             var probeResponse = await _httpClient.SendAsync(probeRequest);
             probeResponse.EnsureSuccessStatusCode();
 
-            var probeResultContent = await probeResponse.Content.ReadAsStringAsync();
-            var probeResult = JsonConvert.DeserializeObject<ProbeResult>(probeResultContent);
+            var responseStream = await probeResponse.Content.ReadAsStreamAsync();
+            var probeResult = ProbeResultParser.Parse(_manifestParsers, responseStream);
             var missingItems = new List<Manifest>();
             foreach (var item in probeResult.ManifestItems)
             {
@@ -170,7 +187,8 @@ namespace SharpCR.Features.SyncIntegration
             var jobs = missingItems.Select(item => new SyncJob
             {
                 ImageRepository = imageRepository,
-                Digest = item.Digest
+                Digest = item.Digest,
+                Size = item.Size
             }).ToList();
             var jobsRequestContent = JsonConvert.SerializeObject(jobs, jsonSettings);
             var jobScheduleRequest = new HttpRequestMessage(HttpMethod.Post, $"{_options.Dispatcher.BaseUrl}/jobs")
@@ -271,12 +289,12 @@ namespace SharpCR.Features.SyncIntegration
             string registry, repoName;
             if (mirrorMode)
             {
-                if (!request.Host.Host.EndsWith(_options.MirrorModeBaseDomain))
+                if (!request.Host.Host.EndsWith(_options.MirrorModeBaseDomain) || request.Host.Host.Length <= _options.MirrorModeBaseDomain.Length)
                 {
                     return (null, null);
                 }
 
-                // foo.bar.base.domain
+                // foo.bar.base.domain => foo.bar
                 registry = request.Host.Host.Substring(0,request.Host.Host.Length - _options.MirrorModeBaseDomain.Length - 1);
                 repoName = string.Join('/', parts);
                 return (registry, repoName);
@@ -313,6 +331,8 @@ namespace SharpCR.Features.SyncIntegration
             public string Tag { get; set; }
 
             public string Digest { get; set; }
+            
+            public long? Size { get; set; }
 
             // todo: implement the auth token integration
             public string AuthorizationToken { get; set; }
@@ -321,6 +341,51 @@ namespace SharpCR.Features.SyncIntegration
         {
             public ManifestV2List ListManifest { get; set; }
             public Manifest[] ManifestItems { get; set; }
+        }
+
+        public static class ProbeResultParser
+        {
+            public static ProbeResult Parse(IManifestParser[] parsers, Stream content)
+            {
+                var result = new ProbeResult();
+                using var sReader = new StreamReader(content, Encoding.UTF8);
+                using var jsonTextReader = new JsonTextReader(sReader);
+
+                var probeResultGlobalObject = JObject.Load(jsonTextReader);
+                var listManifestBytes = (byte[]) (probeResultGlobalObject.Property("ListManifest")!.Value);
+                result.ListManifest = null == listManifestBytes
+                    ? null
+                    : (ManifestV2List) (new ManifestV2List.Parser().Parse(listManifestBytes));
+
+                var manifestsItemArray = (JArray) probeResultGlobalObject.Property("ManifestItems")?.Value;
+                var manifestList = new List<Manifest>();
+                for (var index = 0; index < manifestsItemArray!.Count; ++index)
+                {
+                    var itemBytes = (byte[]) (manifestsItemArray[index]);
+                    var parsedManifest = TryParseManifestFromResponse(parsers, itemBytes);
+                    if (parsedManifest != null)
+                    {
+                        manifestList.Add(parsedManifest);
+                    }
+                }
+
+                result.ManifestItems = manifestList.ToArray();
+                return result;
+            }
+
+            static Manifest TryParseManifestFromResponse(IManifestParser[] parsers, byte[] bytes)
+            {
+                return parsers.Select(p =>
+                    {
+                        try
+                        {
+                            return p.Parse(bytes);
+                        }
+                        catch { return null; }
+                    })
+                    .FirstOrDefault(m => m != null);
+            }
+            
         }
     }
 }

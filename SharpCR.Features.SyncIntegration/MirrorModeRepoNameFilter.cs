@@ -24,16 +24,19 @@ namespace SharpCR.Features.SyncIntegration
                 return;
             }
 
+            var originalRepo = context.RouteData.Values["repo"] as string;
             var request = context.HttpContext.Request;
-            if (!request.Host.Host.EndsWith(_options.MirrorModeBaseDomain))
+            var requestHost = request.Host.Host;
+            if (originalRepo == null ||
+                !requestHost.EndsWith(_options.MirrorModeBaseDomain)
+                || requestHost.Length <= _options.MirrorModeBaseDomain.Length)
             {
                 return;
             }
 
-            // foo.bar.base.domain
-            var registry = request.Host.Host.Substring(0,request.Host.Host.Length - _options.MirrorModeBaseDomain.Length - 1);
-            var repo = context.RouteData.Values["repo"] as string;
-            context.RouteData.Values["repo"] = $"{registry}/{repo}";
+            // foo.bar.base.domain  =>  foo.bar
+            var registry = requestHost.Substring(0,requestHost.Length - _options.MirrorModeBaseDomain.Length - 1);
+            context.RouteData.Values["repo"] = $"{registry}/{originalRepo}";
         }
     }
 }

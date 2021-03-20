@@ -122,7 +122,7 @@ namespace SharpCR.Features.CloudStorage
         
         private (string objectKey, string uri) GetCloudObjectKey(string digest)
         {
-            var objectKey = digest.Replace(':', '/');
+            var objectKey = digest.Replace(':', '/').Insert(10,"/");
             var cosBaseUrl = _config.CosServiceBaseUrl;
             if (!string.IsNullOrEmpty(_config.AcceleratedUploadingBaseUrl))
             {

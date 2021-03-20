@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -204,10 +203,13 @@ namespace SharpCR.Features.SyncIntegration
 
         private async Task SpinWaitForSync(string repoName, List<Manifest> missingItems)
         {
+            var foundManifests = new HashSet<string>();
+            var foundBlobs = new Dictionary<string, string>();
+            
             var maxWait = Task.Delay(TimeSpan.FromSeconds(_options.SyncTimeoutSeconds!.Value));
             while (!maxWait.IsCompleted)
             {
-                var syncCompleted = await CheckSyncCompleted(repoName, missingItems);
+                var syncCompleted = await CheckSyncCompleted(repoName, missingItems, foundManifests, foundBlobs);
                 if (syncCompleted)
                 {
                     return;
@@ -217,19 +219,23 @@ namespace SharpCR.Features.SyncIntegration
             // timeout
         }
 
-        private async Task<bool> CheckSyncCompleted(string repoName, List<Manifest> missingItems)
+        private async Task<bool> CheckSyncCompleted(string repoName, List<Manifest> missingItems, 
+            HashSet<string> foundManifests, Dictionary<string, string> foundBlobs)
         {
-            var createdManifests = new HashSet<string>();
+            if (foundManifests == null)
+            {
+                foundManifests =new HashSet<string>();
+            }
             foreach (var manifest in missingItems)
             {
                 var blobDigestList = manifest.Layers.Select(layer => layer.Digest).ToArray();
-                var uploadedBlobs = await CheckBlobsAreUploaded(blobDigestList);
-                if (uploadedBlobs == null)
+                var blobUploaded = await CheckBlobsAreUploaded(blobDigestList, foundBlobs);
+                if (!blobUploaded)
                 {
                     return false;
                 }
 
-                if (!createdManifests.Contains(manifest.Digest))
+                if (!foundManifests.Contains(manifest.Digest))
                 {
                     var existingItem = await _recordStore.GetArtifactByDigestAsync(repoName, manifest.Digest);
                     if (existingItem == null)
@@ -241,7 +247,7 @@ namespace SharpCR.Features.SyncIntegration
                                 DigestString = layer.Digest,
                                 RepositoryName = repoName,
                                 MediaType = layer.MediaType,
-                                StorageLocation = uploadedBlobs[layer.Digest],
+                                StorageLocation = foundBlobs[layer.Digest],
                                 ContentLength = layer.Size!.Value
                             });
                         }
@@ -254,27 +260,29 @@ namespace SharpCR.Features.SyncIntegration
                         });
                     }
 
-                    createdManifests.Add(manifest.Digest);
+                    foundManifests.Add(manifest.Digest);
                 }
             }
 
             return true;
         }
         
-        private async Task<Dictionary<string, string>> CheckBlobsAreUploaded(string[] blobDigests)
+        private async Task<bool> CheckBlobsAreUploaded(string[] blobDigests, Dictionary<string, string> foundBlobs)
         {
-            var blobLocations = new Dictionary<string, string>();
             foreach (var digest in blobDigests)
             {
-                var blobLocation = await _blobStorage.TryLocateExistingAsync(digest);
-                if (null == blobLocation)
+                if (!foundBlobs.ContainsKey(digest))
                 {
-                    return null;
+                    var blobLocation = await _blobStorage.TryLocateExistingAsync(digest);
+                    if (null == blobLocation)
+                    {
+                        return false;
+                    }
+                    foundBlobs.Add(digest, blobLocation);
                 }
-                blobLocations.Add(digest, blobLocation);
             }
 
-            return blobLocations;
+            return true;
         }
 
         private (string, string) ParseRegistryAndRepoName(HttpRequest request, string repoNameInUrl)

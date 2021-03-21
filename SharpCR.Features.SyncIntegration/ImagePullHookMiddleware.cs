@@ -26,7 +26,7 @@ namespace SharpCR.Features.SyncIntegration
         private static readonly Regex ManifestRegex = new Regex("^/v2/(?<repo>.+)/manifests/(?<ref>.+)$", 
             RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
         private static HttpClient _httpClient;
-        private IManifestParser[] _manifestParsers;
+        private readonly IManifestParser[] _manifestParsers;
 
         public ImagePullHookMiddleware(IOptions<SyncConfiguration> options, IRecordStore recordStore, IBlobStorage blobStorage)
         {
@@ -200,7 +200,6 @@ namespace SharpCR.Features.SyncIntegration
             await SpinWaitForSync(imageRepository, missingItems);
         }
 
-
         private async Task SpinWaitForSync(string repoName, List<Manifest> missingItems)
         {
             var foundManifests = new HashSet<string>();
@@ -308,7 +307,7 @@ namespace SharpCR.Features.SyncIntegration
                 return (registry, repoName);
             }
 
-            if (parts.Count == 2)
+            if (parts.Count == 2 && parts[0].LastIndexOf('.') < 0 /*包含点，意味着有域名*/)
             {
                 parts.Insert(0, "docker.io");
             }

@@ -62,6 +62,16 @@ namespace SharpCR.Features.Tests.CloudStorage
             
             Assert.NotNull(downloableURL);
         }
+
+        [Fact]
+        public void ShouldGenerateDirPath()
+        {
+            var guid = Guid.NewGuid().ToString("N");
+            var sha256 = $"sha256:{guid}";
+            var blobStorage = new CloudBlobStorage(Options.Create<CloudStorageConfiguration>(new CloudStorageConfiguration{ SecretId = "d", SecretKey = "x", CosServiceBaseUrl = "x"}));
+            // var key = blobStorage.GetCloudObjectKey(sha256);
+            // Assert.Equal($"sha256/{guid.Substring(0, 2)}/{guid}", key.objectKey);
+        }
         
     }
 }

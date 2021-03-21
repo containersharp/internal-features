@@ -120,9 +120,11 @@ namespace SharpCR.Features.CloudStorage
             return resourceUri;
         }
         
-        private (string objectKey, string uri) GetCloudObjectKey(string digest)
+        public (string objectKey, string uri) GetCloudObjectKey(string digest)
         {
-            var objectKey = digest.Replace(':', '/').Insert(10,"/");
+            var indexOfColon = digest.IndexOf(':');
+            var subDir = digest.Substring(indexOfColon + 1, 2);
+            var objectKey = digest.Insert(indexOfColon + 1,$"{subDir}/").Replace(':', '/');
             var cosBaseUrl = _config.CosServiceBaseUrl;
             if (!string.IsNullOrEmpty(_config.AcceleratedUploadingBaseUrl))
             {

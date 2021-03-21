@@ -12,8 +12,7 @@ namespace SharpCR.Features.CloudStorage
         {
             var configuration = context.Configuration.GetSection("Features:CloudStorage")?.Get<CloudStorageConfiguration>() ?? new CloudStorageConfiguration();
             services.AddSingleton(Options.Create(configuration));
-            services.AddSingleton<CloudBlobStorage>();
-
+            services.AddSingleton<IBlobStorage, CloudBlobStorage>();
         }
 
         public void ConfigureWebAppPipeline(IApplicationBuilder app, IServiceProvider appServices, StartupContext context)

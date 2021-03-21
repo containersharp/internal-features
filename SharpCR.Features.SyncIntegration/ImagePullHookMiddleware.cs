@@ -360,7 +360,8 @@ namespace SharpCR.Features.SyncIntegration
                 using var jsonTextReader = new JsonTextReader(sReader);
 
                 var probeResultGlobalObject = JObject.Load(jsonTextReader);
-                var listManifestBytes = (byte[]) (probeResultGlobalObject.Property("ListManifest")!.Value);
+                var jValue = probeResultGlobalObject.Property("ListManifest")!.Value as JValue;
+                var listManifestBytes = (jValue  == null || jValue.Type == JTokenType.Null) ? null : (byte[]) jValue;
                 result.ListManifest = null == listManifestBytes
                     ? null
                     : (ManifestV2List) (new ManifestV2List.Parser().Parse(listManifestBytes));

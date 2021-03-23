@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+<PropertyGroup>
+  <TargetFramework>netcoreapp3.1</TargetFramework>
+</PropertyGroup>
+
+<PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+  <OutputPath>..\..\sharpcr\SharpCR.Registry\bin\Debug\</OutputPath>
+</PropertyGroup>
+
+<ItemGroup>
+  <PackageReference Include="SharpCR" Version="1.0.0" />
+  <PackageReference Include="SharpCR.Features" Version="1.0.1" />
+</ItemGroup>
+  
+</Project>

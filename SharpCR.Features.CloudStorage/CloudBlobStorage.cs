@@ -28,7 +28,7 @@ namespace SharpCR.Features.CloudStorage
                 _config.CdnConfig.BaseUrl = _config.CdnConfig.BaseUrl.TrimEnd('/');
             }
 
-            _httpClient = new HttpClient();
+            _httpClient = new HttpClient {Timeout = TimeSpan.FromMinutes(60)};
         }
 
         public async Task<string> TryLocateExistingAsync(string digest)

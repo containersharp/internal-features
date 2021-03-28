@@ -142,3 +142,5 @@ namespace SharpCR.Features.CloudStorage
         }
     }
 }
+
+// todo: chunked uploading

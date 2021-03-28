@@ -17,8 +17,8 @@ namespace SharpCR.Features.ReadOnly
         
         public async Task InvokeAsync(HttpContext context, RequestDelegate next)
         {
-            if (Enum.TryParse(typeof(HttpMethod), context.Request.Method, out var httpMethodObj)
-            && Array.IndexOf(UpdatingRequestMethods, (HttpMethod) httpMethodObj) > -1)
+            var method = new HttpMethod(context.Request.Method);
+            if (Array.IndexOf(UpdatingRequestMethods, method) > -1)
             {
                 context.Response.StatusCode = 404;
                 await context.Response.CompleteAsync();

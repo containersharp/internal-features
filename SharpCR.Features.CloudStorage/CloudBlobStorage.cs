@@ -110,12 +110,12 @@ namespace SharpCR.Features.CloudStorage
                     request.Content.Headers.ContentMD5 = md5Hash;
                     request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
 
-                    var signature =
-                        QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
+                    var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
                     request.Headers.TryAddWithoutValidation("Authorization", signature);
                     var response = await _httpClient.SendAsync(request);
                     response.EnsureSuccessStatusCode();
                     _logger.LogInformation("Successfully completed monolithic blob upload {@uri}.", uri);
+                    return;
                 }
                 catch (Exception ex)
                 {

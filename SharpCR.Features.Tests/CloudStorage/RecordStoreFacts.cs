@@ -48,8 +48,8 @@ namespace SharpCR.Features.Tests.CloudStorage
             };
             await store.CreateArtifactAsync(artifact);
 
-            var storedItem = await store.GetArtifactByDigestAsync(repositoryName, digestString);
-            Assert.NotNull(storedItem);
+            var storedItem = await store.GetArtifactsByDigestAsync(repositoryName, digestString);
+            Assert.NotEmpty(storedItem);
         }
 
         private static IRecordStore CreateRecordStore(string path)

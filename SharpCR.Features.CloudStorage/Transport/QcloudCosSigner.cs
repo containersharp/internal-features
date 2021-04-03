@@ -6,7 +6,6 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
-using System.Web;
 
 namespace SharpCR.Features.CloudStorage.Transport
 {
@@ -88,18 +87,45 @@ namespace SharpCR.Features.CloudStorage.Transport
 
         private  static (string httpParameters, string urlParamList) URLParameters(Uri requestUri)
         {
-            var queryStringMap = HttpUtility.ParseQueryString(requestUri.Query); // queryString should all be UrlEncoded
-            var urlParameters = queryStringMap.AllKeys
+            var queryStringMap = ParseQueryString(requestUri.Query);
+            if (queryStringMap.Count == 0)
+            {
+                return (string.Empty, string.Empty);
+            }
+            
+            var urlParameters = queryStringMap.Keys
                 .OrderBy(k => k)
                 .ToDictionary(k => k.ToLower(),
                     k => string.IsNullOrEmpty(queryStringMap[k]) ? string.Empty : queryStringMap[k],
                     StringComparer.Ordinal);
-            var httpParameters = urlParameters.Aggregate(string.Empty, (prev, kv) => $"{prev}&{kv.Key}={kv.Value}")
+            var httpParameters = urlParameters
+                .Aggregate(string.Empty, (prev, kv) => $"{prev}&{kv.Key}={kv.Value}")
                 .TrimStart('&');
             var urlParamList = string.Join(";", urlParameters.Keys);
             return (httpParameters, urlParamList);
         }
 
+        private static Dictionary<string, string> ParseQueryString(string requestQuery)
+        {
+            var emptyDic = new Dictionary<string, string>();
+            if (string.IsNullOrEmpty(requestQuery))
+            {
+                return emptyDic;
+            }
+            
+            if (requestQuery[0] == '?')
+            {
+                if (requestQuery.Length == 1)
+                {
+                    return emptyDic;
+                }
+                requestQuery = requestQuery.Substring(1);
+            }
+
+            return requestQuery.Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => p.Split('=', StringSplitOptions.RemoveEmptyEntries))
+                .ToDictionary(p => p[0], p => p.Length == 2 ? p[1] : null);
+        }
 
 
         private  static string SHA1(string str)

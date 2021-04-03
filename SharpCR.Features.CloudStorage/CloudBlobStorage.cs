@@ -1,9 +1,12 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
 using SharpCR.Features.CloudStorage.Transport;
@@ -14,6 +17,8 @@ namespace SharpCR.Features.CloudStorage
     {
         private readonly CloudStorageConfiguration _config;
         private readonly HttpClient _httpClient;
+        private const int MultipartUploadPartSize = 10485760;  // 10M
+        private const int MultipartUploadBatchSize = 6; 
 
         public CloudBlobStorage(IOptions<CloudStorageConfiguration> configuredOptions)
         {
@@ -60,24 +65,158 @@ namespace SharpCR.Features.CloudStorage
             response.EnsureSuccessStatusCode();
         }
 
-        public async Task<string> SaveAsync(string digest, Stream stream, string repoName)
+        public async Task<string> SaveAsync(FileInfo temporaryFile, string repoName, string digest)
         {
             var (objectKey, uri) = GetCloudObjectKey(digest);
             
-            var md5Hash = MD5Hash(stream);
-            stream.Seek(0, SeekOrigin.Begin);
+            if (temporaryFile.Length < MultipartUploadPartSize)
+            {
+                await MonolithicUploadAsync(temporaryFile, uri);
+            }
+            else
+            {
+                await BatchUploadAsync(temporaryFile, uri);
+            }
+
+            return objectKey;
+        }
+
+        private async Task MonolithicUploadAsync(FileInfo file, string uri)
+        {
+            await using var fs = file.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
+            var md5Hash = MD5Hash(fs);
             
-            var request = new HttpRequestMessage(HttpMethod.Put, uri);
-            request.Content = new StreamContent(stream);
-            request.Content.Headers.ContentLength = stream.Length; 
-            request.Content.Headers.ContentMD5 = md5Hash; 
+            fs.Seek(0, SeekOrigin.Begin);
+            var request = new HttpRequestMessage(HttpMethod.Put, uri) {Content = new StreamContent(fs)};
+            request.Content.Headers.ContentLength = file.Length;
+            request.Content.Headers.ContentMD5 = md5Hash;
             request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
 
             var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
             request.Headers.TryAddWithoutValidation("Authorization", signature);
             var response = await _httpClient.SendAsync(request);
             response.EnsureSuccessStatusCode();
-            return objectKey;
+        }
+
+        private async Task BatchUploadAsync(FileInfo temporaryFile, string baseUri)
+        {
+            var partCount = (temporaryFile.Length / MultipartUploadPartSize) + (temporaryFile.Length % MultipartUploadPartSize == 0 ? 0 : 1);
+            if (partCount == 0)
+            {
+                return;
+            }
+            
+            var uploadId = await InitializeMultipartUpload(baseUri);
+            var indexes = new List<long>((int) partCount);
+            for (var i = 0; i < partCount; i++)
+            {
+                indexes.Add(i * MultipartUploadPartSize);
+            }
+
+            try
+            {
+                var eTagList = new List<string>();
+                var batches = indexes.Batch(MultipartUploadBatchSize).ToArray();
+                foreach (var batch in batches)
+                {
+                    var tasks = batch.Select(streamOffset => UploadPart(temporaryFile, baseUri, uploadId, streamOffset)).ToArray();
+                    await Task.WhenAll(tasks);
+                    eTagList.AddRange(tasks.Select(t => t.Result));
+                }
+                await CompleteMultipartUpload(baseUri, uploadId, eTagList);
+            }
+            catch(Exception ex)
+            {
+                try
+                {
+                    await RemoveFailedPartUpload(baseUri, uploadId);
+                }
+                catch (Exception exNested)
+                {
+                    // we can't do anything now
+                }
+            }
+        }
+
+
+        private async Task<string> InitializeMultipartUpload(string uri)
+        {
+            var uploadIdPattern = new Regex("<UploadId>(?<id>[^<]+)</UploadId>", RegexOptions.Compiled);
+            var initUri = $"{uri}?uploads";
+            var request = new HttpRequestMessage(HttpMethod.Post, initUri);
+            request.Headers.TryAddWithoutValidation("Content-Length", "0");
+            request.Headers.TryAddWithoutValidation("Content-Type", "application/octet-stream");
+
+            var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
+            request.Headers.TryAddWithoutValidation("Authorization", signature);
+            var response = await _httpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            return uploadIdPattern.Match(responseContent).Groups["id"].Value;
+        }
+
+        private async Task<string> UploadPart(FileInfo temporaryFile, string baseUri, string uploadId, long streamOffset)
+        {
+            var fs = temporaryFile.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
+            fs.Seek(streamOffset, SeekOrigin.Begin);
+            await using var stream = new FixedLengthStream(fs, MultipartUploadPartSize);
+
+            var partNumber = (streamOffset / MultipartUploadPartSize) + 1;
+            var uploadUri = $"{baseUri}?partNumber={partNumber}&uploadId={uploadId}";
+            var md5Hash = MD5Hash(stream);
+            
+            stream.Seek(0, SeekOrigin.Begin);
+            var request = new HttpRequestMessage(HttpMethod.Put, uploadUri) {Content = new StreamContent(stream)};
+            request.Content.Headers.ContentLength = stream.Length;
+            request.Content.Headers.ContentMD5 = md5Hash;
+            request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
+
+            var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
+            request.Headers.TryAddWithoutValidation("Authorization", signature);
+            var response = await _httpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            
+            return response.Headers.ETag?.Tag;
+        }
+
+        private async Task CompleteMultipartUpload(string baseUri, string uploadId, List<string> partETags)
+        {
+            var completeUri = $"{baseUri}?uploadId={uploadId}";
+            var contentBuilder = new StringBuilder("<CompleteMultipartUpload>");
+            for (var i = 0; i < partETags.Count; i++)
+            {
+                contentBuilder.Append($"<Part><PartNumber>{i+1}</PartNumber><ETag>{partETags[i]}</ETag></Part>");
+            }
+            contentBuilder.Append("</CompleteMultipartUpload>");
+
+            await using var ms = new MemoryStream(Encoding.Default.GetBytes(contentBuilder.ToString()));
+            var md5Hash = MD5Hash(ms);
+            ms.Seek(0, SeekOrigin.Begin);
+            
+            var request = new HttpRequestMessage(HttpMethod.Post, completeUri)
+            {
+                Content = new StreamContent(ms)
+            };
+            request.Content.Headers.ContentLength = ms.Length;
+            request.Content.Headers.ContentMD5 = md5Hash;
+            request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/xml");
+
+            var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
+            request.Headers.TryAddWithoutValidation("Authorization", signature);
+            var response = await _httpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+        }
+
+        private async Task RemoveFailedPartUpload(string baseUri, string uploadId)
+        {
+            var deleteUri = $"{baseUri}?uploadId={uploadId}";
+            var request = new HttpRequestMessage(HttpMethod.Delete, deleteUri);
+
+            var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
+            request.Headers.TryAddWithoutValidation("Authorization", signature);
+            var response = await _httpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
         }
 
 
@@ -119,8 +258,8 @@ namespace SharpCR.Features.CloudStorage
             var resourceUri = $"{_config.CdnConfig.BaseUrl}/{location}?sign={timestamp}-{randString}-0-{md5}";
             return resourceUri;
         }
-        
-        public (string objectKey, string uri) GetCloudObjectKey(string digest)
+
+        private (string objectKey, string uri) GetCloudObjectKey(string digest)
         {
             var indexOfColon = digest.IndexOf(':');
             var subDir = digest.Substring(indexOfColon + 1, 2);
@@ -141,6 +280,15 @@ namespace SharpCR.Features.CloudStorage
             return md5.ComputeHash(stream);
         }
     }
-}
 
-// todo: chunked uploading
+    public static class EnumerableExtensions
+    {
+        public static IEnumerable<IEnumerable<T>> Batch<T>(this IEnumerable<T> items,  int batchSize)
+        {
+            return items.Select((item, idx) => new { item, inx = idx })
+                .GroupBy(x => x.inx / batchSize)
+                .Select(g => g.Select(x => x.item));
+        }
+    }
+}
+// todo: retry when upload error

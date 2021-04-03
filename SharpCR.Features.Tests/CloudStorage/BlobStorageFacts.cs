@@ -25,7 +25,7 @@ namespace SharpCR.Features.Tests.CloudStorage
             var guid = Guid.NewGuid().ToString("N");
             var bytes = Encoding.Default.GetBytes(guid);
             await using var ms = new MemoryStream(bytes);
-            var location = await storage.SaveAsync($"sha256:{guid}", ms, "abc/foo");
+            var location = await storage.SaveAsync(ms.CreateTempFile(),  "abc/foo", $"sha256:{guid}");
 
             Assert.NotEmpty(location);
         }
@@ -73,5 +73,17 @@ namespace SharpCR.Features.Tests.CloudStorage
             // Assert.Equal($"sha256/{guid.Substring(0, 2)}/{guid}", key.objectKey);
         }
         
+    }
+
+    static class Extensions
+    {
+        public  static FileInfo CreateTempFile(this Stream content)
+        {
+            var filePath = Path.Combine(Path.GetTempPath(), "SharpCRTests",  Guid.NewGuid().ToString("N"));
+            var fs = File.Open(filePath, FileMode.Create);
+            content.CopyTo(fs);
+            fs.Dispose();
+            return new FileInfo(filePath);
+        }
     }
 }

@@ -8,6 +8,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SharpCR.Features.CloudStorage.Transport;
 
@@ -19,9 +20,12 @@ namespace SharpCR.Features.CloudStorage
         private readonly HttpClient _httpClient;
         private const int MultipartUploadPartSize = 10485760;  // 10M
         private const int MultipartUploadBatchSize = 6; 
+        
+        private readonly ILogger<CloudBlobStorage> _logger;
 
-        public CloudBlobStorage(IOptions<CloudStorageConfiguration> configuredOptions)
+        public CloudBlobStorage(IOptions<CloudStorageConfiguration> configuredOptions, ILogger<CloudBlobStorage> logger)
         {
+            _logger = logger;
             _config = configuredOptions.Value;
             if (string.IsNullOrEmpty(_config.SecretId) || string.IsNullOrEmpty(_config.SecretKey) || string.IsNullOrEmpty(_config.CosServiceBaseUrl))
             {
@@ -44,6 +48,7 @@ namespace SharpCR.Features.CloudStorage
             request.Headers.TryAddWithoutValidation("Authorization", signature);
             var response = await _httpClient.SendAsync(request);
             
+            _logger.LogDebug("Trying to locating blob {@uri}. result: {@status}", uri, response.StatusCode);
             return response.StatusCode == HttpStatusCode.OK ? objectKey : null;
         }
 
@@ -51,6 +56,8 @@ namespace SharpCR.Features.CloudStorage
         {
             var downloadableUrl = GenerateCosDownloadUrl(location);
             var response = await _httpClient.GetAsync(downloadableUrl);
+            
+            _logger.LogDebug("Reading blob content {@uri}.", downloadableUrl);
             return await response.Content.ReadAsStreamAsync();
         }
 
@@ -63,6 +70,7 @@ namespace SharpCR.Features.CloudStorage
             
             var response = await _httpClient.SendAsync(request);
             response.EnsureSuccessStatusCode();
+            _logger.LogInformation("Blob deleted {@uri}.", resourceUri);
         }
 
         public async Task<string> SaveAsync(FileInfo temporaryFile, string repoName, string digest)
@@ -83,19 +91,46 @@ namespace SharpCR.Features.CloudStorage
 
         private async Task MonolithicUploadAsync(FileInfo file, string uri)
         {
-            await using var fs = file.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
-            var md5Hash = MD5Hash(fs);
-            
-            fs.Seek(0, SeekOrigin.Begin);
-            var request = new HttpRequestMessage(HttpMethod.Put, uri) {Content = new StreamContent(fs)};
-            request.Content.Headers.ContentLength = file.Length;
-            request.Content.Headers.ContentMD5 = md5Hash;
-            request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
+            const int maxRetries = 3;
+            var timeTried = 0;
 
-            var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
-            request.Headers.TryAddWithoutValidation("Authorization", signature);
-            var response = await _httpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
+            byte[] md5Hash = null;
+            Exception lastException = null;
+            FileStream fs = null;
+            while (++timeTried < maxRetries)
+            {
+                try
+                {
+                    fs = file.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
+                    md5Hash ??= Md5Hash(fs);
+
+                    fs.Seek(0, SeekOrigin.Begin);
+                    var request = new HttpRequestMessage(HttpMethod.Put, uri) {Content = new StreamContent(fs)};
+                    request.Content.Headers.ContentLength = file.Length;
+                    request.Content.Headers.ContentMD5 = md5Hash;
+                    request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
+
+                    var signature =
+                        QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
+                    request.Headers.TryAddWithoutValidation("Authorization", signature);
+                    var response = await _httpClient.SendAsync(request);
+                    response.EnsureSuccessStatusCode();
+                    _logger.LogInformation("Successfully completed monolithic blob upload {@uri}.", uri);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("Failed to complete monolithic blob upload {@upload}. error: {@error}",
+                        new { uri, size = file.Length, temporaryFile = file.FullName, uploadId = (string)null }, ex);
+                    lastException = ex;
+                }
+                finally
+                {
+                    fs?.Dispose();
+                }
+                await Task.Delay(TimeSpan.FromSeconds(3));
+            }
+
+            throw lastException!;
         }
 
         private async Task BatchUploadAsync(FileInfo temporaryFile, string baseUri)
@@ -127,17 +162,19 @@ namespace SharpCR.Features.CloudStorage
             }
             catch(Exception ex)
             {
+                var uploadingTask = new {uri = baseUri, size = temporaryFile.Length, temporaryFile = temporaryFile.FullName, uploadId};
+                _logger.LogWarning("Failed to upload {@blob}. error: {@error}",  uploadingTask,  ex);
                 try
                 {
                     await RemoveFailedPartUpload(baseUri, uploadId);
                 }
                 catch (Exception exNested)
                 {
-                    // we can't do anything now
+                    _logger.LogDebug("Failed to remove intermedium upload task {@blob}. error: {@error}", uploadingTask,  exNested);
                 }
+                throw;
             }
         }
-
 
         private async Task<string> InitializeMultipartUpload(string uri)
         {
@@ -153,31 +190,59 @@ namespace SharpCR.Features.CloudStorage
             response.EnsureSuccessStatusCode();
 
             var responseContent = await response.Content.ReadAsStringAsync();
-            return uploadIdPattern.Match(responseContent).Groups["id"].Value;
+            var uploadId = uploadIdPattern.Match(responseContent).Groups["id"].Value;
+            _logger.LogDebug("Successfully initialized multipart upload session for blob {@upload}.", new { uri = initUri, uploadId });
+            return uploadId;
         }
 
         private async Task<string> UploadPart(FileInfo temporaryFile, string baseUri, string uploadId, long streamOffset)
         {
-            var fs = temporaryFile.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
-            fs.Seek(streamOffset, SeekOrigin.Begin);
-            await using var stream = new FixedLengthStream(fs, MultipartUploadPartSize);
+            const int maxRetries = 3;
+            var timeTried = 0;
 
             var partNumber = (streamOffset / MultipartUploadPartSize) + 1;
             var uploadUri = $"{baseUri}?partNumber={partNumber}&uploadId={uploadId}";
-            var md5Hash = MD5Hash(stream);
-            
-            stream.Seek(0, SeekOrigin.Begin);
-            var request = new HttpRequestMessage(HttpMethod.Put, uploadUri) {Content = new StreamContent(stream)};
-            request.Content.Headers.ContentLength = stream.Length;
-            request.Content.Headers.ContentMD5 = md5Hash;
-            request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
+            byte[] md5Hash = null;
 
-            var signature = QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
-            request.Headers.TryAddWithoutValidation("Authorization", signature);
-            var response = await _httpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-            
-            return response.Headers.ETag?.Tag;
+            FixedLengthStream fixedLengthStream = null;
+            Exception lastException = null;
+            while (++timeTried < maxRetries)
+            {
+                try
+                {
+                    var fs = temporaryFile.Open(FileMode.Open, FileAccess.Read, FileShare.Read);
+                    fs.Seek(streamOffset, SeekOrigin.Begin);
+                    fixedLengthStream = new FixedLengthStream(fs, MultipartUploadPartSize);
+                    md5Hash ??= Md5Hash(fixedLengthStream);
+
+                    fixedLengthStream.Seek(0, SeekOrigin.Begin);
+                    var request = new HttpRequestMessage(HttpMethod.Put, uploadUri) {Content = new StreamContent(fixedLengthStream)};
+                    request.Content.Headers.ContentLength = fixedLengthStream.Length;
+                    request.Content.Headers.ContentMD5 = md5Hash;
+                    request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
+
+                    var signature =
+                        QcloudCosSigner.GenerateSignature(request, _config.SecretId, _config.SecretKey, false);
+                    request.Headers.TryAddWithoutValidation("Authorization", signature);
+                    var response = await _httpClient.SendAsync(request);
+                    response.EnsureSuccessStatusCode();
+                    _logger.LogDebug("Successfully uploaded blob batch part {@uri}.", uploadUri);
+                    return response.Headers.ETag?.Tag;
+                }
+                catch(Exception ex)
+                {
+                    _logger.LogDebug("Failed to upload blob batch part {@part}. error: {@error}", 
+                        new {uri = uploadUri, size = temporaryFile.Length, temporaryFile = temporaryFile.FullName, uploadId}, ex);
+                    lastException = ex;
+                }
+                finally
+                {
+                    fixedLengthStream?.Dispose();
+                }
+                await Task.Delay(TimeSpan.FromSeconds(3));
+            }
+
+            throw lastException!;
         }
 
         private async Task CompleteMultipartUpload(string baseUri, string uploadId, List<string> partETags)
@@ -191,7 +256,7 @@ namespace SharpCR.Features.CloudStorage
             contentBuilder.Append("</CompleteMultipartUpload>");
 
             await using var ms = new MemoryStream(Encoding.Default.GetBytes(contentBuilder.ToString()));
-            var md5Hash = MD5Hash(ms);
+            var md5Hash = Md5Hash(ms);
             ms.Seek(0, SeekOrigin.Begin);
             
             var request = new HttpRequestMessage(HttpMethod.Post, completeUri)
@@ -206,6 +271,7 @@ namespace SharpCR.Features.CloudStorage
             request.Headers.TryAddWithoutValidation("Authorization", signature);
             var response = await _httpClient.SendAsync(request);
             response.EnsureSuccessStatusCode();
+            _logger.LogInformation("Successfully completed blob batch upload session {@uri}.", completeUri);
         }
 
         private async Task RemoveFailedPartUpload(string baseUri, string uploadId)
@@ -217,6 +283,7 @@ namespace SharpCR.Features.CloudStorage
             request.Headers.TryAddWithoutValidation("Authorization", signature);
             var response = await _httpClient.SendAsync(request);
             response.EnsureSuccessStatusCode();
+            _logger.LogDebug("Blob batch upload session deleted: {@uri}.", deleteUri);
         }
 
 
@@ -253,7 +320,7 @@ namespace SharpCR.Features.CloudStorage
             
             var stringToSign = $"/{location}-{timestamp}-{randString}-0-{_config.CdnConfig.AuthKeyTypeA}";
             using var ms = new MemoryStream(Encoding.UTF8.GetBytes(stringToSign));
-            var md5 = MD5Hash(ms).ToHexString();
+            var md5 = Md5Hash(ms).ToHexString();
             
             var resourceUri = $"{_config.CdnConfig.BaseUrl}/{location}?sign={timestamp}-{randString}-0-{md5}";
             return resourceUri;
@@ -274,7 +341,7 @@ namespace SharpCR.Features.CloudStorage
             return (objectKey, uri);
         }
 
-        private static byte[] MD5Hash(Stream stream)
+        private static byte[] Md5Hash(Stream stream)
         {
             using var md5 = System.Security.Cryptography.MD5.Create();
             return md5.ComputeHash(stream);
@@ -291,4 +358,3 @@ namespace SharpCR.Features.CloudStorage
         }
     }
 }
-// todo: retry when upload error

@@ -2,6 +2,7 @@
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using SharpCR.Features.CloudStorage;
 using Xunit;
@@ -20,7 +21,7 @@ namespace SharpCR.Features.Tests.CloudStorage
         [Fact]
         public async Task ShouldSaveBlob()
         {
-            var storage = new CloudBlobStorage(Options.Create(_config));
+            var storage = new CloudBlobStorage(Options.Create(_config), NullLogger<CloudBlobStorage>.Instance);
 
             var guid = Guid.NewGuid().ToString("N");
             var bytes = Encoding.Default.GetBytes(guid);
@@ -33,7 +34,7 @@ namespace SharpCR.Features.Tests.CloudStorage
         [Fact]
         public async Task ShouldReadByLocation()
         {
-            var storage = new CloudBlobStorage(Options.Create(_config));
+            var storage = new CloudBlobStorage(Options.Create(_config), NullLogger<CloudBlobStorage>.Instance);
             var location = "abc/foo/sha256/b5b2b2c507a0944348e0303114d8d93aaaa081732b86451d9bce1f432a537bc7";
 
             await using var readResult = await storage.ReadAsync(location);
@@ -48,7 +49,7 @@ namespace SharpCR.Features.Tests.CloudStorage
         [Fact]
         public void ShouldSupportDownloadsURL()
         {
-            var storage = new CloudBlobStorage(Options.Create(_config));
+            var storage = new CloudBlobStorage(Options.Create(_config), NullLogger<CloudBlobStorage>.Instance);
             Assert.True(storage.SupportsDownloading);
         }
         
@@ -56,7 +57,7 @@ namespace SharpCR.Features.Tests.CloudStorage
         [Fact]
         public async Task ShouldGenearateDownloadsURL()
         {
-            var storage = new CloudBlobStorage(Options.Create(_config));
+            var storage = new CloudBlobStorage(Options.Create(_config), NullLogger<CloudBlobStorage>.Instance);
             var location = "abc/foo/sha256/2c4cd5fce8d443c5a58e7f2505198f35";
             var downloableURL = await storage.GenerateDownloadUrlAsync(location);
             
@@ -68,7 +69,7 @@ namespace SharpCR.Features.Tests.CloudStorage
         {
             var guid = Guid.NewGuid().ToString("N");
             var sha256 = $"sha256:{guid}";
-            var blobStorage = new CloudBlobStorage(Options.Create<CloudStorageConfiguration>(new CloudStorageConfiguration{ SecretId = "d", SecretKey = "x", CosServiceBaseUrl = "x"}));
+            var blobStorage = new CloudBlobStorage(Options.Create<CloudStorageConfiguration>(new CloudStorageConfiguration{ SecretId = "d", SecretKey = "x", CosServiceBaseUrl = "x"}) , NullLogger<CloudBlobStorage>.Instance);
             // var key = blobStorage.GetCloudObjectKey(sha256);
             // Assert.Equal($"sha256/{guid.Substring(0, 2)}/{guid}", key.objectKey);
         }

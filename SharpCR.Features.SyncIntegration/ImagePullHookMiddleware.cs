@@ -105,6 +105,7 @@ namespace SharpCR.Features.SyncIntegration
 
         private async Task<bool> CheckIfImageExistsAsync(string registry, string repoName, string imageReference)
         {
+            // todo: 实现旧的 tag 要更新的情况（目前仅实现了 tag 不存在的情况）
             var storageRepoName = $"{registry}/{repoName}";
             var existingItem = await GetArtifactByReferenceAsync(storageRepoName, imageReference);
             return existingItem != null;
@@ -158,12 +159,13 @@ namespace SharpCR.Features.SyncIntegration
                 });
                 _logger.LogInformation("Image list manifest created: {@image}.", syncingImage);
                 return;
+                // todo: 将 List 中的镜像加入到“非紧急队列”中
             }
             
             var missingManifests = new List<Manifest>();
             foreach (var item in probeResult.ManifestItems)
             {
-                var itemExists = (null != await _recordStore.GetArtifactByDigestAsync(imageRepository, item.Digest));
+                var itemExists = (await _recordStore.GetArtifactsByDigestAsync(imageRepository, item.Digest)).Any();
                 if (!itemExists)
                 {
                     missingManifests.Add(item);
@@ -180,11 +182,12 @@ namespace SharpCR.Features.SyncIntegration
                 }
 
                 var item = probeResult.ManifestItems.Single();
-                var existingRecord = await _recordStore.GetArtifactByDigestAsync(imageRepository, item.Digest);
-                if (string.IsNullOrEmpty(existingRecord.Tag))
+                var existingRecords = await _recordStore.GetArtifactsByDigestAsync(imageRepository, item.Digest);
+                var emptyTagRecord = existingRecords.FirstOrDefault(r => string.IsNullOrEmpty(r.Tag));
+                if (emptyTagRecord != null)
                 {
-                    existingRecord.Tag = reference;
-                    await _recordStore.UpdateArtifactAsync(existingRecord);
+                    emptyTagRecord.Tag = reference;
+                    await _recordStore.UpdateArtifactAsync(emptyTagRecord);
                 }
                 else
                 {
@@ -249,8 +252,7 @@ namespace SharpCR.Features.SyncIntegration
                 Size = missingManifest.Layers?.Select(l => l.Size ?? 0).Sum() ?? 0
             };
             var json = JsonConvert.SerializeObject(new[] {syncJob}, jsonSettings);
-            var jobScheduleRequestContent = new StringContent(json, Encoding.UTF8, jsonMediaType);
-            return jobScheduleRequestContent;
+            return new StringContent(json, Encoding.UTF8, jsonMediaType);
         }
 
         private async Task SpinWaitForSync(string repoName, string reference, Manifest missingManifest, string syncingTag)
@@ -290,10 +292,15 @@ namespace SharpCR.Features.SyncIntegration
                 return false;
             }
 
-            // todo: support multiple tag on one manifest digest
-            var existingRecord = await _recordStore.GetArtifactByDigestAsync(repoName, missingManifest.Digest);
-            var createNewTag = !string.IsNullOrEmpty(existingRecord?.Tag) && !string.IsNullOrEmpty(syncingTag) && !string.Equals(existingRecord.Tag, syncingTag);
-            if (existingRecord == null || createNewTag)
+            var pullingTag = !string.IsNullOrEmpty(syncingTag);
+            var digest = missingManifest.Digest;
+            var artifactsList = _recordStore.QueryArtifacts(repoName).Where(a => string.Equals(a.DigestString, digest, StringComparison.OrdinalIgnoreCase)).ToList();
+            var existingRecordByTag = pullingTag ? (artifactsList.FirstOrDefault(a => string.Equals(a.Tag, syncingTag, StringComparison.OrdinalIgnoreCase))) : null;
+            var emptyTagRecord = pullingTag ? artifactsList.FirstOrDefault(a => string.IsNullOrEmpty(a.Tag)) : null;
+
+            var createNewRecord = !artifactsList.Any();
+            var createNewTag = pullingTag && emptyTagRecord == null && existingRecordByTag == null;
+            if (createNewRecord || createNewTag)
             {
                 await _recordStore.CreateArtifactAsync(new ArtifactRecord
                 {
@@ -304,11 +311,10 @@ namespace SharpCR.Features.SyncIntegration
                     RepositoryName = repoName
                 });
                 _logger.LogInformation("New manifest record created: {@image}.", new {repo = repoName, digest = missingManifest.Digest, tag = syncingTag});
-
-            }else if (string.IsNullOrEmpty(existingRecord.Tag) && !string.IsNullOrEmpty(syncingTag))
+            }else if(emptyTagRecord != null)
             {
-                existingRecord.Tag = syncingTag;
-                await _recordStore.UpdateArtifactAsync(existingRecord);
+                emptyTagRecord.Tag = syncingTag;
+                await _recordStore.UpdateArtifactAsync(emptyTagRecord);
                 _logger.LogInformation("Existing manifest tagged: {@image}.", new {repo = repoName, digest = missingManifest.Digest, tag = syncingTag});
             }
    
@@ -387,7 +393,7 @@ namespace SharpCR.Features.SyncIntegration
         private async Task<ArtifactRecord> GetArtifactByReferenceAsync(string repoName, string reference)
         {
             return IsDigestRef(reference)
-                ? await _recordStore.GetArtifactByDigestAsync(repoName, reference)
+                ? (await _recordStore.GetArtifactsByDigestAsync(repoName, reference)).FirstOrDefault()
                 : await _recordStore.GetArtifactByTagAsync(repoName, reference);
         }
 
